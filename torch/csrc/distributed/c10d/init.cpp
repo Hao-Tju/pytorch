@@ -1160,6 +1160,13 @@ Arguments:
           c10::intrusive_ptr<::c10d::ProcessGroup>,
           ::c10d::PyProcessGroup>(module, "ProcessGroup")
           .def(py::init<int, int>())
+          .def(
+              py::init<
+                  const c10::intrusive_ptr<::c10d::Store>&,
+                  int,
+                  int,
+                  c10::intrusive_ptr<::c10d::ProcessGroup::Options>>(),
+              py::call_guard<py::gil_scoped_release>())
           .def("rank", &::c10d::ProcessGroup::getRank)
           .def("size", &::c10d::ProcessGroup::getSize)
           .def("name", &::c10d::ProcessGroup::getBackendName)
@@ -1559,6 +1566,24 @@ Arguments:
               "_end_coalescing",
               &::c10d::ProcessGroup::endCoalescing,
               py::arg("reqs"),
+              py::call_guard<py::gil_scoped_release>())
+          .def(
+              "_set_backend",
+              [](const c10::intrusive_ptr<::c10d::ProcessGroup>& self,
+                 const c10::Device& device,
+                 const c10::intrusive_ptr<::c10d::Backend>& backend) {
+                self->setBackend(device.type(), backend);
+              },
+              py::arg("device"),
+              py::arg("backend"),
+              py::call_guard<py::gil_scoped_release>())
+          .def(
+              "_get_backend",
+              [](const c10::intrusive_ptr<::c10d::ProcessGroup>& self,
+                 const c10::Device& device) {
+                return self->getBackend(device.type());
+              },
+              py::arg("device"),
               py::call_guard<py::gil_scoped_release>());
 
   // base ProcessGroup::Options binding
@@ -1570,15 +1595,316 @@ Arguments:
 Base class for all processs group options implementations, such as the nccl
 options :class:`~torch.distributed.ProcessGroupNCCL.Options`).
 )")
+          .def(
+              py::init([](const std::string& backend,
+                          const std::chrono::milliseconds& timeout) {
+                return c10::make_intrusive<::c10d::ProcessGroup::Options>(
+                    backend, timeout);
+              }),
+              py::arg("backend"),
+              py::arg("timeout") = kProcessGroupDefaultTimeout,
+              py::call_guard<py::gil_scoped_release>())
           .def_readonly("backend", &::c10d::ProcessGroup::Options::backend)
           .def_readwrite("_timeout", &::c10d::ProcessGroup::Options::timeout);
+
+  // TODO: The collection definitions handles direct instantiation of
+  // ProcessGroup subclasses (e.g. dist.ProcessGroupGloo). This is not supported
+  // and should be removed once all tests are transitioned
+  auto backend =
+      py::class_<::c10d::Backend, c10::intrusive_ptr<::c10d::Backend>>(
+          module, "Backend")
+          .def("rank", &::c10d::Backend::getRank)
+          .def("size", &::c10d::Backend::getSize)
+          .def("name", &::c10d::Backend::getBackendName)
+          .def(
+              "broadcast",
+              &::c10d::Backend::broadcast,
+              py::arg("tensors"),
+              py::arg("opts") = ::c10d::BroadcastOptions(),
+              py::call_guard<py::gil_scoped_release>())
+          .def(
+              "broadcast",
+              [](const c10::intrusive_ptr<::c10d::Backend>& self,
+                 at::Tensor& x,
+                 int rootRank) {
+                ::c10d::BroadcastOptions opts;
+                opts.rootRank = rootRank;
+                std::vector<at::Tensor> xs = {x};
+                return self->broadcast(xs, opts);
+              },
+              py::arg("tensor"),
+              py::arg("root"),
+              py::call_guard<py::gil_scoped_release>())
+          .def(
+              "allreduce",
+              &::c10d::Backend::allreduce,
+              py::arg("tensors"),
+              py::arg("opts") = ::c10d::AllreduceOptions(),
+              py::call_guard<py::gil_scoped_release>())
+          .def(
+              "allreduce",
+              [](const c10::intrusive_ptr<::c10d::Backend>& self,
+                 std::vector<at::Tensor>& xs,
+                 ::c10d::ReduceOp op) {
+                ::c10d::AllreduceOptions opts;
+                opts.reduceOp = op;
+                return self->allreduce(xs, opts);
+              },
+              py::arg("tensors"),
+              py::arg("op") = ::c10d::ReduceOp::SUM,
+              py::call_guard<py::gil_scoped_release>())
+          .def(
+              "allreduce",
+              [](const c10::intrusive_ptr<::c10d::Backend>& self,
+                 at::Tensor& x,
+                 ::c10d::ReduceOp op) {
+                ::c10d::AllreduceOptions opts;
+                opts.reduceOp = op;
+                std::vector<at::Tensor> xs = {x};
+                return self->allreduce(xs, opts);
+              },
+              py::arg("tensor"),
+              py::arg("op") = ::c10d::ReduceOp::SUM,
+              py::call_guard<py::gil_scoped_release>())
+          .def(
+              "allreduce_coalesced",
+              &::c10d::Backend::allreduce_coalesced,
+              py::arg("tensors"),
+              py::arg("opts") = ::c10d::AllreduceCoalescedOptions(),
+              py::call_guard<py::gil_scoped_release>())
+          .def(
+              "reduce",
+              &::c10d::Backend::reduce,
+              py::arg("tensors"),
+              py::arg("opts") = ::c10d::ReduceOptions(),
+              py::call_guard<py::gil_scoped_release>())
+          .def(
+              "reduce",
+              [](const c10::intrusive_ptr<::c10d::Backend>& self,
+                 at::Tensor& x,
+                 int rootRank,
+                 ::c10d::ReduceOp op) {
+                ::c10d::ReduceOptions opts;
+                opts.reduceOp = op;
+                opts.rootRank = rootRank;
+                std::vector<at::Tensor> xs = {x};
+                return self->reduce(xs, opts);
+              },
+              py::arg("tensor"),
+              py::arg("root"),
+              py::arg("op") = ::c10d::ReduceOp::SUM,
+              py::call_guard<py::gil_scoped_release>())
+          .def(
+              "allgather",
+              &::c10d::Backend::allgather,
+              py::arg("output_tensors"),
+              py::arg("input_tensors"),
+              py::arg("opts") = ::c10d::AllgatherOptions(),
+              py::call_guard<py::gil_scoped_release>())
+          .def(
+              "_allgather_base",
+              &::c10d::Backend::_allgather_base,
+              py::arg("output"),
+              py::arg("input"),
+              py::arg("opts") = ::c10d::AllgatherOptions(),
+              py::call_guard<py::gil_scoped_release>())
+          .def(
+              "allgather",
+              [](const c10::intrusive_ptr<::c10d::Backend>& self,
+                 std::vector<at::Tensor>& output,
+                 at::Tensor& input) {
+                std::vector<std::vector<at::Tensor>> outputs = {output};
+                std::vector<at::Tensor> inputs = {input};
+                return self->allgather(
+                    outputs, inputs, ::c10d::AllgatherOptions());
+              },
+              py::arg("output_tensors"),
+              py::arg("input_tensor"),
+              py::call_guard<py::gil_scoped_release>())
+          .def(
+              "allgather_coalesced",
+              &::c10d::Backend::allgather_coalesced,
+              py::arg("output_lists"),
+              py::arg("input_list"),
+              py::arg("opts") = ::c10d::AllgatherOptions(),
+              py::call_guard<py::gil_scoped_release>())
+          .def(
+              "gather",
+              &::c10d::Backend::gather,
+              py::arg("output_tensors"),
+              py::arg("input_tensors"),
+              py::arg("opts") = ::c10d::GatherOptions(),
+              py::call_guard<py::gil_scoped_release>())
+          .def(
+              "gather",
+              [](const c10::intrusive_ptr<::c10d::Backend>& self,
+                 std::vector<at::Tensor>& output,
+                 at::Tensor& input,
+                 int rootRank) {
+                ::c10d::GatherOptions opts;
+                opts.rootRank = rootRank;
+                std::vector<std::vector<at::Tensor>> outputs = {output};
+                std::vector<at::Tensor> inputs = {input};
+                return self->gather(outputs, inputs, opts);
+              },
+              py::arg("output_tensors"),
+              py::arg("input_tensor"),
+              py::arg("root"),
+              py::call_guard<py::gil_scoped_release>())
+          .def(
+              "scatter",
+              &::c10d::Backend::scatter,
+              py::arg("output_tensors"),
+              py::arg("input_tensors"),
+              py::arg("opts") = ::c10d::ScatterOptions(),
+              py::call_guard<py::gil_scoped_release>())
+          .def(
+              "scatter",
+              [](const c10::intrusive_ptr<::c10d::Backend>& self,
+                 at::Tensor& output,
+                 std::vector<at::Tensor>& input,
+                 int rootRank) {
+                ::c10d::ScatterOptions opts;
+                opts.rootRank = rootRank;
+                std::vector<std::vector<at::Tensor>> inputs = {input};
+                std::vector<at::Tensor> outputs = {output};
+                return self->scatter(outputs, inputs, opts);
+              },
+              py::arg("output_tensor"),
+              py::arg("input_tensors"),
+              py::arg("root"),
+              py::call_guard<py::gil_scoped_release>())
+          .def(
+              "reduce_scatter",
+              &::c10d::Backend::reduce_scatter,
+              py::arg("output_tensors"),
+              py::arg("input_tensors"),
+              py::arg("opts") = ::c10d::ReduceScatterOptions(),
+              py::call_guard<py::gil_scoped_release>())
+          .def(
+              "reduce_scatter",
+              [](const c10::intrusive_ptr<::c10d::Backend>& self,
+                 at::Tensor& output,
+                 std::vector<at::Tensor>& input,
+                 ::c10d::ReduceOp op) {
+                std::vector<at::Tensor> outputs = {output};
+                std::vector<std::vector<at::Tensor>> inputs = {input};
+                ::c10d::ReduceScatterOptions opts;
+                opts.reduceOp = op;
+                return self->reduce_scatter(outputs, inputs, opts);
+              },
+              py::arg("output_tensors"),
+              py::arg("input_tensor"),
+              py::arg("op") = ::c10d::ReduceOp::SUM,
+              py::call_guard<py::gil_scoped_release>())
+          .def(
+              "_reduce_scatter_base",
+              &::c10d::Backend::_reduce_scatter_base,
+              py::arg("outputTensor"),
+              py::arg("inputTensor"),
+              py::arg("opts") = ::c10d::ReduceScatterOptions(),
+              py::call_guard<py::gil_scoped_release>())
+          .def(
+              "alltoall_base",
+              &::c10d::Backend::alltoall_base,
+              py::arg("output_tensor"),
+              py::arg("input_tensor"),
+              py::arg("output_split_sizes"),
+              py::arg("input_split_sizes"),
+              py::arg("opts") = ::c10d::AllToAllOptions(),
+              py::call_guard<py::gil_scoped_release>())
+          .def(
+              "alltoall_base",
+              [](::c10d::Backend& self,
+                 at::Tensor& output,
+                 at::Tensor& input,
+                 std::vector<int64_t> outputSplitSizes,
+                 std::vector<int64_t> inputSplitSizes) {
+                return self.alltoall_base(
+                    output,
+                    input,
+                    outputSplitSizes,
+                    inputSplitSizes,
+                    ::c10d::AllToAllOptions());
+              },
+              py::arg("output"),
+              py::arg("input"),
+              py::arg("output_split_sizes"),
+              py::arg("input_split_sizes"),
+              py::call_guard<py::gil_scoped_release>())
+          .def(
+              "alltoall",
+              &::c10d::Backend::alltoall,
+              py::arg("output_tensor"),
+              py::arg("input_tensor"),
+              py::arg("opts") = ::c10d::AllToAllOptions(),
+              py::call_guard<py::gil_scoped_release>())
+          .def(
+              "send",
+              &::c10d::Backend::send,
+              py::arg("tensors"),
+              py::arg("dstRank"),
+              py::arg("tag"),
+              py::call_guard<py::gil_scoped_release>())
+          .def(
+              "recv",
+              &::c10d::Backend::recv,
+              py::arg("tensors"),
+              py::arg("srcRank"),
+              py::arg("tag"),
+              py::call_guard<py::gil_scoped_release>())
+          .def(
+              "recv_anysource",
+              &::c10d::Backend::recvAnysource,
+              py::call_guard<py::gil_scoped_release>())
+          .def(
+              "barrier",
+              [](const c10::intrusive_ptr<::c10d::Backend>& self,
+                 const ::c10d::BarrierOptions& opts) {
+                return self->barrier(opts);
+              },
+              py::arg("opts") = ::c10d::BarrierOptions(),
+              py::call_guard<py::gil_scoped_release>())
+          .def(
+              "_set_sequence_number_for_group",
+              &::c10d::Backend::setSequenceNumberForGroup,
+              py::call_guard<py::gil_scoped_release>())
+          .def(
+              "_get_sequence_number_for_group",
+              &::c10d::Backend::getSequenceNumberForGroup,
+              py::call_guard<py::gil_scoped_release>())
+          .def(
+              "monitored_barrier",
+              [](const c10::intrusive_ptr<::c10d::Backend>& self,
+                 const std::chrono::milliseconds& timeout,
+                 bool waitAllRanks) {
+                ::c10d::BarrierOptions opts;
+                opts.timeout = timeout;
+                return self->monitoredBarrier(opts, waitAllRanks);
+              },
+              py::arg("timeout") = ::c10d::kUnsetTimeout,
+              py::arg("wait_all_ranks") = false,
+              py::call_guard<py::gil_scoped_release>())
+          .def(
+              "_get_backend_name",
+              &::c10d::Backend::getBackendName,
+              py::call_guard<py::gil_scoped_release>())
+          .def(
+              "_start_coalescing",
+              &::c10d::Backend::startCoalescing,
+              py::call_guard<py::gil_scoped_release>())
+          .def(
+              "_end_coalescing",
+              &::c10d::Backend::endCoalescing,
+              py::arg("reqs"),
+              py::call_guard<py::gil_scoped_release>());
 
 #ifdef USE_C10D_GLOO
   static const std::string GLOO_SOCKET_IFNAME_ENV = "GLOO_SOCKET_IFNAME";
 
   auto processGroupGloo =
       intrusive_ptr_no_gil_destructor_class_<::c10d::ProcessGroupGloo>(
-          module, "ProcessGroupGloo", processGroup);
+          module, "ProcessGroupGloo", backend);
 
   shared_ptr_class_<::gloo::transport::Device>(processGroupGloo, "Device");
 
@@ -1658,11 +1984,10 @@ options :class:`~torch.distributed.ProcessGroupNCCL.Options`).
   // checking the op type and input tensor shapes.
   auto processGroupWrapper =
       intrusive_ptr_no_gil_destructor_class_<::c10d::ProcessGroupWrapper>(
-          module, "_ProcessGroupWrapper", processGroup)
+          module, "_ProcessGroupWrapper", backend)
           .def(
-              py::init([](const c10::intrusive_ptr<::c10d::ProcessGroup>& pg,
-                          const c10::intrusive_ptr<::c10d::ProcessGroupGloo>&
-                              gloo_pg) {
+              py::init([](const c10::intrusive_ptr<::c10d::Backend>& pg,
+                          const c10::intrusive_ptr<::c10d::Backend>& gloo_pg) {
                 return c10::make_intrusive<::c10d::ProcessGroupWrapper>(
                     pg, gloo_pg);
               }),
@@ -1676,7 +2001,7 @@ options :class:`~torch.distributed.ProcessGroupNCCL.Options`).
 #ifdef USE_C10D_NCCL
   auto processGroupNCCL =
       intrusive_ptr_no_gil_destructor_class_<::c10d::ProcessGroupNCCL>(
-          module, "ProcessGroupNCCL", processGroup)
+          module, "ProcessGroupNCCL", backend)
           .def(
               py::init<
                   const c10::intrusive_ptr<::c10d::Store>&,
@@ -1738,7 +2063,7 @@ Example::
 #ifdef USE_C10D_MPI
   auto processGroupMPI =
       intrusive_ptr_no_gil_destructor_class_<::c10d::ProcessGroupMPI>(
-          module, "ProcessGroupMPI", processGroup);
+          module, "ProcessGroupMPI", backend);
 
   // Define static create function instead of a constructor, because
   // this function may return null. This happens if this process is not
@@ -1754,7 +2079,7 @@ Example::
 #ifdef USE_C10D_UCC
   auto processGroupUCC =
       intrusive_ptr_no_gil_destructor_class_<::c10d::ProcessGroupUCC>(
-          module, "ProcessGroupUCC", processGroup)
+          module, "ProcessGroupUCC", backend)
           .def(
               py::init([](const c10::intrusive_ptr<::c10d::Store>& store,
                           int rank,
