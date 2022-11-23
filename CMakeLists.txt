@@ -492,6 +492,10 @@ if(MSVC)
     # unclean and the warnings aren't telling us anything useful.)
     string(APPEND ${flag_var} " /w")
 
+    # Enable permissive mode, as VC++ is confused considers std ambiguous
+    # if std::hash is partially specialized
+    string(APPEND ${flag_var} " /permissive-")
+
     if(${CAFFE2_USE_MSVC_STATIC_RUNTIME})
       if(${flag_var} MATCHES "/MD")
         string(REGEX REPLACE "/MD" "/MT" ${flag_var} "${${flag_var}}")
